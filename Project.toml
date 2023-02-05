@@ -1,0 +1,7 @@
+name = "Orbits"
+uuid = "5dde018d-c7f0-41fc-aea5-37053889e134"
+authors = ["Arunav Gupta <centaurus.ab@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
