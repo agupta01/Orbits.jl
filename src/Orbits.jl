@@ -6,7 +6,7 @@ Scalars will always be denoted with lowercase letters, e.g. r, v, h, etc.
 """
 module Orbits
 
-import LinearAlgebra
+using LinearAlgebra
 
 # Constants
 struct Planet
@@ -35,7 +35,7 @@ function getapses(v::Float64, r::Float64, γ::Float64, angletype::String)
     if angletype == "deg"
         γ = γ * (π / 180)
     end
-    
+
     μ = Earth.μ
     V = [v * sin(γ), v * cos(γ), 0]
     R = [r, 0, 0]
@@ -72,7 +72,7 @@ Operates completely in the orbital plane (PQW/perifocal frame).
 - `γ`: flight path angle, in degrees or radians
 - `θ`: true anomaly, in degrees or radians
 """
-function rv2koe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
+function RV2koe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
     μ = Earth.μ
 
     r = norm(R)
@@ -90,7 +90,7 @@ function rv2koe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
     if e >= 1
         # Hyperbolic or parabolic orbit
         ra = Inf
-        T = []
+        T = nothing
     else
         # Elliptical orbit
         ra = a * (1 + e)
@@ -164,13 +164,13 @@ Compute all 3D orbital elements given the cartesian position and velocity vector
 - `ω`: argument of periapsis, in degrees or radians
 - `θ`: true anomaly, in degrees or radians
 """
-function rv2coe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
+function RV2coe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
     μ = Earth.μ
 
     # ECI unit vectors
-    I = [1, 0, 0]
-    J = [0, 1, 0]
-    K = [0, 0, 1]
+    I = [1.0, 0.0, 0.0]
+    J = [0.0, 1.0, 0.0]
+    K = [0.0, 0.0, 1.0]
 
     # R and V scalars
     r = norm(R)
@@ -192,8 +192,8 @@ function rv2coe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
     # Longitude of the ascending node
     N = K × H
     n = norm(N)
-    cosΩ = I ⋅ N / n
-    sinΩ = J ⋅ N / n
+    cosΩ = (I ⋅ N) / n
+    sinΩ = (J ⋅ N) / n
     Ω = atan(sinΩ, cosΩ)
 
     # Argument of periapsis
@@ -210,6 +210,19 @@ function rv2coe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
         θ = 2π - acos(E ⋅ R / (e * r))
     end
 
+    if isapprox(i, 0)
+        if isapprox(e, 0)
+            # Circular equatorial orbit
+            θ = Ω + ω + θ # replace with true longitude at epoch
+            Ω = nothing
+            ω = nothing
+        else
+            # Elliptical equatorial orbit
+            ω = Ω + ω # replace with longitude of periapsis
+            Ω = nothing
+        end
+    end
+
     # Convert to degrees if necessary
     if angletype == "deg"
         i = i * (180 / π)
@@ -219,6 +232,58 @@ function rv2coe(R::Vector{Float64}, V::Vector{Float64}, angletype::String)
     end
 
     return a, e, i, Ω, ω, θ
+end
+
+"""
+Compute the position and velocity vectors given the orbital elements.
+
+# Arguments
+- `a`: semimajor axis, in km
+- `e`: eccentricity
+- `i`: inclination, in degrees or radians
+- `Ω`: longitude of the ascending node, in degrees or radians
+- `ω`: argument of periapsis, in degrees or radians
+- `θ`: true anomaly, in degrees or radians
+- `angletype`: "deg" or "rad", depending on the units of the angles
+
+# Returns
+- `R`: cartesian (ECI) position vector, in km
+- `V`: cartesian (ECI) velocity vector, in km/s
+"""
+function coe2RV(a::Float64, e::Float64, i::Float64, Ω::Float64, ω::Float64, θ::Float64, angletype::String)
+    μ = Earth.μ
+
+    # Convert to radians if necessary
+    if angletype == "deg"
+        i = i * (π / 180)
+        Ω = Ω * (π / 180)
+        ω = ω * (π / 180)
+        θ = θ * (π / 180)
+    end
+
+    # Compute preliminaries
+    p = a * (1 - e^2)
+    r = p / (1 + e * cos(θ))
+    h = √(p * μ)
+
+    sθ = sin(θ)
+    cθ = cos(θ)
+
+    # Compute the position and velocity vectors in PQW
+    R = r * [cθ, sθ, 0.0]
+    V = (μ / h) * [-sθ, e + cθ, 0.0]
+
+    # Print the PQW vectors
+    println("PQW vectors:")
+    println("R = $(R)")
+    println("V = $(V)")
+
+    # Rotate the vectors into the ECI frame
+    R_transform = makeR(i, Ω, ω, "rad")
+    R = R_transform * R
+    V = R_transform * V
+
+    return R, V
 end
 
 """
@@ -263,6 +328,68 @@ function makeR(i::Float64, Ω::Float64, ω::Float64, angletype::String)
     return R
 end
 
-export Earth, getapses, rv2koe, koe2rv, rv2coe, makeR
+
+"""
+Uses Gibbs' method of orbit determination to compute the satellite's
+intertial velocity vector V2 based on 3 cartesian (ECI) position 
+vectors: R1, R2, R3.
+
+# Arguments
+- `R1`: cartesian (ECI) position vector at time t1, in km
+- `R2`: cartesian (ECI) position vector at time t2, in km
+- `R3`: cartesian (ECI) position vector at time t3, in km
+- `getcoe`: if true, return the orbital elements instead of the V2 velocity vector
+
+# Returns
+if `getcoe` is false:
+- `V2`: cartesian (ECI) velocity vector at time t2, in km/s
+if `getcoe` is true:
+- `a`: semimajor axis, in km
+- `e`: eccentricity
+- `i`: inclination, in degrees
+- `Ω`: longitude of the ascending node, in degrees
+- `ω`: argument of periapsis, in degrees
+- `θ`: true anomaly, in degrees
+"""
+function gibbs(R1::Vector{Float64}, R2::Vector{Float64}, R3::Vector{Float64}, getcoe::Bool=false)::Union{Vector{Float64},Tuple{Float64,Float64,Float64,Float64,Float64,Float64}}
+    μ = Earth.μ
+
+    # Compute norms
+    r1 = norm(R1)
+    r2 = norm(R2)
+    r3 = norm(R3)
+
+    # Check if position vectors are coplanar
+    ϵ = (R1 ⋅ (R2 × R3)) / (r1 * norm(R2 × R3))
+    if abs(ϵ) >= 0.0349
+        @error "Position vectors are not coplanar."
+    end
+
+    # Compute angles
+    θ12 = acos(R1 ⋅ R2 / (r1 * r2))
+    θ23 = acos(R2 ⋅ R3 / (r2 * r3))
+
+    if isapprox(θ12, 0.0, atol=(π / 180)) || isapprox(θ23, 0.0, atol=(π / 180))
+        @warn "Position vectors are too close together. Results may be inaccurate."
+    end
+
+    # Compute auxiliary vectors
+    D = (R2 × R3) + (R3 × R1) + (R1 × R2)
+    N = r1 * (R2 × R3) + r2 * (R3 × R1) + r3 * (R1 × R2)
+    S = (r2 - r3) * R1 + (r3 - r1) * R2 + (r1 - r2) * R3
+
+    # Compute the velocity vector
+    V2 = (1 / r2) * √(μ / (norm(N) * norm(D))) * (D × R2) + √(μ / (norm(N) * norm(D))) * S
+
+    if getcoe
+        # Compute the orbital elements
+        return RV2coe(R2, V2, "deg")
+    else
+        return V2
+    end
+end
+
+
+export Earth, getapses, RV2koe, koe2rv, RV2coe, coe2RV, makeR, gibbs
 
 end # module
