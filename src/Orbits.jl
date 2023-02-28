@@ -12,8 +12,9 @@ using LinearAlgebra
 include("./constants.jl")
 
 # Functions
-include("./parameters.jl")
-include("./propagation.jl")
-include("./determination.jl")
+include("./parameters.jl") # ch. 2
+include("./determination.jl") # ch. 3
+include("./propagation.jl") # ch. 4
+include("./perturbations.jl") # ch. 5
 
 end # module
