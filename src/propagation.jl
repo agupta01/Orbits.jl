@@ -163,10 +163,7 @@ function propagate(R::Vector{Float64}, V::Vector{Float64}, Δθ::Float64)::Tuple
     r = p / (1 + e * cos(θ1))
 
     # Compute the Lagrangian coefficients
-    f = 1 - (r / p) * (1 - cos(Δθ))
-    g = (r * r0 * sin(Δθ)) / (√(p * Earth.μ))
-    fdot = √(Earth.μ / p) * (((1 - cos(Δθ)) / p) - (1 / r) - (1 / r0)) * tan(Δθ / 2)
-    gdot = 1 - (r0 / p) * (1 - cos(Δθ))
+    f, g, fdot, gdot = lagrangian(r, r0, Δθ, p)
 
     # Calculate the new position and velocity
     R1 = f * R + g * V
@@ -253,7 +250,7 @@ Solve Lambert's problem using the p-iteration method.
 - `e`: eccentricity
 - `a`: semi-major axis, in km
 """
-function lambert(R1::Vector{Float64}, R2::Vector{Float64}, Δt::Float64; longway::Bool=false)::Tuple{Vector{Float64},Vector{Float64},Float64,Float64,Float64}
+function lambert(R1::Vector{Float64}, R2::Vector{Float64}, Δt::Float64, longway::Bool=false)::Tuple{Vector{Float64},Vector{Float64},Float64,Float64,Float64}
     # Compute norms
     r1 = norm(R1)
     r2 = norm(R2)
@@ -268,10 +265,56 @@ function lambert(R1::Vector{Float64}, R2::Vector{Float64}, Δt::Float64; longway
     end
 
     # Compute auxiliary components
-    k = r1*r2*(1 - cos(Δθ))
+    k = r1 * r2 * (1 - cos(Δθ))
     l = r1 + r2
     m = r1 * r2 * (1 + cos(Δθ))
 
     # calculate p's range
     pmin = k / (l + √(2m))
     pmax = k / (l - √(2m))
+
+    # compute two initial guesses
+    p1 = 0.7 * pmin + 0.3 * pmax
+    p2 = 0.3 * pmin + 0.7 * pmax
+
+    # compute the TOF of the second guess
+    geta(p) = (m * k * p) / ((2m - l^2) * p^2 + (2 * k * l * p - k^2))
+    function getTOF(p)
+        f, g, fdot, gdot = lagrangian(r2, r1, Δθ, p)
+        a = geta(p)
+        cosΔE = 1 - (r1 / a) * (1 - f)
+        sinΔE = -(r1 * r2 * fdot) / √(Earth.μ * a)
+        ΔE = atan(sinΔE, cosΔE)
+        if ΔE < 0
+            ΔE += 2π
+        end
+        TOF = g + √(a^3 / Earth.μ) * (ΔE - sin(ΔE)) # in seconds
+        return TOF
+    end
+    τ2 = getTOF(p1) - Δt
+    τ = getTOF(p2) - Δt
+    p = p2 - τ * ((p2 - p1) / (τ - τ2))
+    while true
+        # Compute the TOF of the new guess
+        τ2 = τ
+        τ = getTOF(p) - Δt
+        println("p: $p, τ: $τ")
+        (abs(τ) > 1e-4) || break # if τ is small enough, we're done
+
+        # otherwise, compute the next guess
+        p1 = p2
+        p2 = p
+        p = p2 - τ * ((p2 - p1) / (τ - τ2))
+    end
+
+    # Compute the Lagrangian coefficients to get V1 and V2
+    f, g, fdot, gdot = lagrangian(r2, r1, Δθ, p)
+    V1 = (1 / g) * (R2 - f * R1)
+    V2 = fdot * R1 + (gdot / g) * (R2 - f * R1)
+
+    # Compute the rest of the parameters
+    a = geta(p)
+    e = √(1 - p / a)
+
+    return V1, V2, p, e, a
+end
